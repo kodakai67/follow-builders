@@ -20,17 +20,43 @@ import { readFile, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import { execSync } from 'child_process';
 
 // -- Constants ---------------------------------------------------------------
 
 const USER_DIR = join(homedir(), '.follow-builders');
 const CONFIG_PATH = join(USER_DIR, 'config.json');
 
-const FEED_X_URL = 'https://raw.githubusercontent.com/zarazhangrui/follow-builders/main/feed-x.json';
-const FEED_PODCASTS_URL = 'https://raw.githubusercontent.com/zarazhangrui/follow-builders/main/feed-podcasts.json';
-const FEED_BLOGS_URL = 'https://raw.githubusercontent.com/zarazhangrui/follow-builders/main/feed-blogs.json';
+const SCRIPT_DIR = decodeURIComponent(new URL('.', import.meta.url).pathname);
+const REPO_ROOT = join(SCRIPT_DIR, '..');
 
-const PROMPTS_BASE = 'https://raw.githubusercontent.com/zarazhangrui/follow-builders/main/prompts';
+// Which GitHub repo to pull feeds/prompts from, in priority order:
+// 1. FB_REPO env var (e.g. FB_REPO=myuser/follow-builders)
+// 2. The git origin of the checkout this script lives in (works for forks)
+// 3. The upstream repo
+function detectOriginRepo() {
+  try {
+    const url = execSync('git remote get-url origin', {
+      cwd: SCRIPT_DIR,
+      stdio: ['ignore', 'pipe', 'ignore']
+    }).toString().trim();
+    // Works for https://github.com/owner/repo(.git), git@github.com:owner/repo,
+    // and proxied clone URLs (e.g. Claude Code web) that end in .../owner/repo
+    const match = url.match(/([^/:]+)\/([^/:]+?)(?:\.git)?\/?$/);
+    return match ? `${match[1]}/${match[2]}` : null;
+  } catch {
+    return null;
+  }
+}
+
+const FEED_REPO = process.env.FB_REPO || detectOriginRepo() || 'zarazhangrui/follow-builders';
+const RAW_BASE = `https://raw.githubusercontent.com/${FEED_REPO}/main`;
+
+const FEED_X_URL = `${RAW_BASE}/feed-x.json`;
+const FEED_PODCASTS_URL = `${RAW_BASE}/feed-podcasts.json`;
+const FEED_BLOGS_URL = `${RAW_BASE}/feed-blogs.json`;
+
+const PROMPTS_BASE = `${RAW_BASE}/prompts`;
 const PROMPT_FILES = [
   'summarize-podcast.md',
   'summarize-tweets.md',
@@ -53,6 +79,26 @@ async function fetchText(url) {
   return res.text();
 }
 
+// Load a feed: latest from GitHub first, falling back to the copy in the
+// local checkout (feeds are committed to the repo daily by the GitHub Action,
+// so a fresh clone always has a usable copy even without network access).
+async function loadFeed(url, localFilename, errors) {
+  const remote = await fetchJSON(url).catch(() => null);
+  if (remote) return remote;
+
+  const localPath = join(REPO_ROOT, localFilename);
+  if (existsSync(localPath)) {
+    try {
+      const local = JSON.parse(await readFile(localPath, 'utf-8'));
+      errors.push(`Used local copy of ${localFilename} (remote fetch failed)`);
+      return local;
+    } catch (err) {
+      errors.push(`Could not parse local ${localFilename}: ${err.message}`);
+    }
+  }
+  return null;
+}
+
 // -- Main --------------------------------------------------------------------
 
 async function main() {
@@ -72,11 +118,11 @@ async function main() {
     }
   }
 
-  // 2. Fetch all three feeds
+  // 2. Fetch all three feeds (remote first, local checkout as fallback)
   const [feedX, feedPodcasts, feedBlogs] = await Promise.all([
-    fetchJSON(FEED_X_URL),
-    fetchJSON(FEED_PODCASTS_URL),
-    fetchJSON(FEED_BLOGS_URL)
+    loadFeed(FEED_X_URL, 'feed-x.json', errors),
+    loadFeed(FEED_PODCASTS_URL, 'feed-podcasts.json', errors),
+    loadFeed(FEED_BLOGS_URL, 'feed-blogs.json', errors)
   ]);
 
   if (!feedX) errors.push('Could not fetch tweet feed');
@@ -105,8 +151,7 @@ async function main() {
   // Otherwise, fetch the latest from GitHub so they get central improvements.
   // If GitHub is unreachable, fall back to the local copy shipped with the skill.
   const prompts = {};
-  const scriptDir = decodeURIComponent(new URL('.', import.meta.url).pathname);
-  const localPromptsDir = join(scriptDir, '..', 'prompts');
+  const localPromptsDir = join(REPO_ROOT, 'prompts');
   const userPromptsDir = join(USER_DIR, 'prompts');
 
   for (const filename of PROMPT_FILES) {
@@ -121,7 +166,7 @@ async function main() {
     }
 
     // Priority 2: latest from GitHub (central updates)
-    const remote = await fetchText(`${PROMPTS_BASE}/${filename}`);
+    const remote = await fetchText(`${PROMPTS_BASE}/${filename}`).catch(() => null);
     if (remote) {
       prompts[key] = remote;
       continue;
