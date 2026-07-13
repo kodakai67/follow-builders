@@ -100,6 +100,19 @@ git clone https://github.com/zarazhangrui/follow-builders.git ~/.claude/skills/f
 cd ~/.claude/skills/follow-builders/scripts && npm install
 ```
 
+### Claude Code on the web (claude.ai/code)
+
+No installation needed. Open a session on this repository and type `/digest`
+(optionally `/digest zh` or `/digest bilingual`). The session uses the
+project skill in `.claude/skills/digest/` to fetch the latest feed, remix it,
+and hand you the digest in-chat plus as a downloadable markdown file.
+
+Feeds are fetched from this repo's `main` branch (auto-detected from the git
+origin, so forks read their own feed). If the network is unavailable, the
+feed files committed in the checkout are used as a fallback. You can override
+the source repo with the `FB_REPO` environment variable
+(e.g. `FB_REPO=zarazhangrui/follow-builders` to read the upstream feed).
+
 ## Requirements
 
 - An AI agent (OpenClaw, Claude Code, or similar)
